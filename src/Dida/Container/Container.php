@@ -1,33 +1,42 @@
 <?php
 /**
- * Dida Framework  -- A Rapid Development Framework
- * Copyright (c) Zeupin LLC. (http://zeupin.com)
+ * Dida Framework  -- PHP轻量级快速开发框架
+ * 版权所有 (c) 上海宙品信息科技有限公司
  *
- * Licensed under The MIT License.
- * Redistributions of files must retain the above copyright notice.
+ * 官网: <https://github.com/zeupin/dida>
+ * Gitee: <https://gitee.com/zeupin/dida>
  */
-
-namespace Dida;
+namespace Dida\Container;
 
 use \ArrayAccess;
-use \Dida\ContainerException;
+use \Closure;
+use \Dida\Container\ContainerException;
+use \Dida\Container\NotFoundException;
+use \Psr\Container\ContainerInterface;
+use \ReflectionClass;
 
 /**
  * Container
+ *
+ * 1. 已实现PSR-11规范。
+ * 2. 已实现ArrayAccess接口，可用$container[$id]形式调用。
+ * 3. PSR规范(中文版)参见 <https://learnku.com/docs/psr>。
+ * 4. PSR-11中，每个容器的条目称为一个 Entry。
+ * 5. 每个Entry可为：类名/闭包/服务实例。
  */
-class Container implements ArrayAccess
+class Container implements ArrayAccess, ContainerInterface
 {
     /**
      * 版本号
      */
-    const VERSION = '20180104';
+    const VERSION = '20191204';
 
     /* 类型常量 */
     const CLASSNAME_TYPE = 'classname';     // 类名字符串
     const CLOSURE_TYPE = 'closure';         // 闭包
     const INSTANCE_TYPE = 'instance';       // 服务实例
 
-    /* 所有服务的keys */
+    /* 登记的所有服务id */
     protected $_keys = [];
 
     /* 不同种类的服务集合 */
@@ -35,18 +44,6 @@ class Container implements ArrayAccess
     protected $_closures = [];    // 闭包
     protected $_instances = [];   // 已生成的实例
     protected $_singletons = [];  // 单例服务
-
-
-    public function __get($id)
-    {
-        // 如果有此服务，返回此服务
-        if ($this->has($id)) {
-            return $this->get($id);
-        }
-
-        // 属性不存在，抛出异常
-        throw new ContainerException(null, ContainerException::PROPERTY_NOT_FOUND);
-    }
 
 
     /**
@@ -113,19 +110,23 @@ class Container implements ArrayAccess
      * @param string $id
      * @param string|closure|object $service
      *
-     * @return \Dida\Container $this 链式调用
+     * @return Container $this   链式调用
+     *
+     * @throws ContainerException
      */
     public function set($id, $service)
     {
+        // 以最新的为准
         if ($this->has($id)) {
             $this->remove($id);
         }
 
+        // 设置service，失败抛异常
         if (is_string($service)) {
             $this->_keys[$id] = self::CLASSNAME_TYPE;
             $this->_classnames[$id] = $service;
         } elseif (is_object($service)) {
-            if ($service instanceof \Closure) {
+            if ($service instanceof Closure) {
                 $this->_keys[$id] = self::CLOSURE_TYPE;
                 $this->_closures[$id] = $service;
             } else {
@@ -148,7 +149,7 @@ class Container implements ArrayAccess
      * @param string $id
      * @param string|closure|object $service
      *
-     * @return \Dida\Container $this 链式调用
+     * @return Container $this   链式调用
      */
     public function setSingleton($id, $service)
     {
@@ -159,20 +160,43 @@ class Container implements ArrayAccess
 
 
     /**
+     * 获取指定id的实体
+     *
+     * @param string $id
+     *
+     * @return mixed
+     *
+     * @throws NotFoundException
+     */
+    public function get($id)
+    {
+        // 如果有此服务，默认返回一个共享服务
+        if ($this->has($id)) {
+            return $this->getShared($id);
+        }
+
+        // PSR-11规范: id不存在时，抛出一个实现NotFoundExceptionInterface的异常
+        throw new NotFoundException($id);
+    }
+
+
+    /**
      * 返回一个共享的服务实例
      *
      * 如果需要返回新的服务实例，需要用getNew()方法来完成。
      *
-     * @param string $id 服务id
-     * @param array $parameters 待传入的参数数组，可选填
+     * @param string $id          服务id
+     * @param array $parameters   待传入的参数数组，可选
      *
      * @return mixed
+     *
+     * @throws NotFoundException
      */
-    public function get($id, array $parameters = [])
+    public function getShared($id, array $parameters = [])
     {
         if (!$this->has($id)) {
-            // 容器中不存在指定id的服务
-            throw new ContainerException(null, ContainerException::SERVICE_NOT_FOUND);
+            // PSR-11规范: id不存在时，抛出一个实现NotFoundExceptionInterface的异常
+            throw new NotFoundException($id);
         }
 
         $obj = null;
@@ -199,7 +223,7 @@ class Container implements ArrayAccess
                 }
 
                 // 如果是第一次运行，则创建新服务实例，并保存备用
-                $class = new \ReflectionClass($this->_classnames[$id]);
+                $class = new ReflectionClass($this->_classnames[$id]);
                 if (!$class->isInstantiable()) {
                     return null;
                 }
@@ -213,16 +237,19 @@ class Container implements ArrayAccess
     /**
      * 返回一个新的服务实例
      *
-     * @param string $id 服务id
-     * @param array $parameters 待传入的参数数组
+     * @param string $id          服务id
+     * @param array $parameters   待传入的参数数组，可选
      *
      * @return mixed
+     *
+     * @throws NotFoundException
+     * @throws ContainerException
      */
     public function getNew($id, array $parameters = [])
     {
         if (!$this->has($id)) {
-            // 容器中不存在指定id的服务
-            throw new ContainerException(null, ContainerException::SERVICE_NOT_FOUND);
+            // PSR-11规范: id不存在时，抛出一个实现NotFoundExceptionInterface的异常
+            throw new NotFoundException($id);
         }
 
         if (isset($this->_singletons[$id])) {
@@ -241,7 +268,7 @@ class Container implements ArrayAccess
                 return $serviceInstance;
 
             case self::CLASSNAME_TYPE:
-                $class = new \ReflectionClass($this->_classnames[$id]);
+                $class = new ReflectionClass($this->_classnames[$id]);
                 if (!$class->isInstantiable()) {
                     return null;
                 }
@@ -252,9 +279,11 @@ class Container implements ArrayAccess
 
 
     /**
-     * 删除指定的条目
+     * 删除指定的服务
      *
      * @param string $id
+     *
+     * @return void
      */
     public function remove($id)
     {
@@ -264,7 +293,7 @@ class Container implements ArrayAccess
 
 
     /**
-     * 返回所有的keys
+     * 返回所有登记的服务id
      *
      * @return array
      */
